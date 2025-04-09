@@ -1,0 +1,54 @@
+version: "3.8"
+
+services:
+  app:
+    container_name: task-crud-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - ./.env:/app/.env
+    working_dir: /app
+    restart: on-failure
+    depends_on:
+      - db
+      - redis
+    env_file:
+      - .env
+    networks:
+      - app-network
+
+  db:
+    container_name: postgres-db
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgre
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+  redis:
+    container_name: redis-server
+    image: redis:7
+    restart: always
+    command: [ "redis-server", "--port", "6380", "--requirepass", "secret123" ]
+    ports:
+      - "6380:6380"
+    networks:
+      - app-network
+
+volumes:
+  pgdata:
+
+networks:
+  app-network:
+    driver: bridge
