@@ -8,23 +8,26 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
-    volumes:
-      - .:/app
-      - ./.env:/app/.env
-    working_dir: /app
-    restart: on-failure
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - .env
+    restart: always
     networks:
       - app-network
+    healthcheck:  # ⬅️ Tambahkan healthcheck untuk readiness app
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   db:
     container_name: postgres-db
     image: postgres:15
-    restart: always
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgre
@@ -35,16 +38,25 @@ services:
       - pgdata:/var/lib/postgresql/data
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     container_name: redis-server
     image: redis:7
-    restart: always
     command: [ "redis-server", "--port", "6380", "--requirepass", "secret123" ]
     ports:
       - "6380:6380"
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 volumes:
   pgdata:

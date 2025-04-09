@@ -74,7 +74,37 @@ func (uc *RepoUseCase) GetAllRepos(ctx context.Context) ([]entity.Repository, er
 }
 
 func (uc *RepoUseCase) GetRepositoryByID(ctx context.Context, id uint) (*entity.Repository, error) {
-	return uc.repoRepo.GetRepositoryByID(id)
+	cacheKey := fmt.Sprintf("repository:%d", id)
+
+	if uc.redis != nil {
+		cached, err := uc.redis.Get(ctx, cacheKey).Result()
+		if err == nil {
+			var cachedRepo entity.Repository
+			if err := json.Unmarshal([]byte(cached), &cachedRepo); err == nil {
+				fmt.Println("✅ Repository ditemukan di Redis")
+				return &cachedRepo, nil
+			}
+			fmt.Printf("⚠️ Gagal unmarshal repository dari Redis: %v\n", err)
+		} else if err != redis.Nil {
+			fmt.Printf("⚠️ Redis error saat get: %v\n", err)
+		}
+	}
+
+	// Ambil dari DB kalau tidak ada di Redis
+	repo, err := uc.repoRepo.GetRepositoryByID(id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Simpan ke Redis
+	if uc.redis != nil {
+		bytes, _ := json.Marshal(repo)
+		if err := uc.redis.Set(ctx, cacheKey, bytes, 10*time.Minute).Err(); err != nil {
+			fmt.Printf("⚠️ Gagal simpan repository ke Redis: %v\n", err)
+		}
+	}
+
+	return repo, nil
 }
 
 func (uc *RepoUseCase) CreateRepo(ctx context.Context, repo *entity.Repository) error {

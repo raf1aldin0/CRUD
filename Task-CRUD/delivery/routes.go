@@ -6,6 +6,7 @@ import (
 	"Task-CRUD/internal/repository/user"
 	"Task-CRUD/internal/usecase"
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"time"
@@ -18,39 +19,48 @@ import (
 func NewRouter(db *gorm.DB, rdb *redis.Client) *mux.Router {
 	router := mux.NewRouter()
 
-	// ========== Probes ==========
-	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	// ========== Health Check Handlers ==========
+
+	// Liveness Probe
+	router.HandleFunc("/health/liveness", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"live"}`))
+		json.NewEncoder(w).Encode(map[string]string{"status": "live"})
 	}).Methods("GET")
 
-	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+	// Readiness Probe
+	router.HandleFunc("/health/readiness", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		// Check DB connection
 		sqlDB, err := db.DB()
 		if err != nil {
-			log.Println("❌ Gagal mendapatkan koneksi DB:", err)
+			log.Println("❌ DB connection error:", err)
 			http.Error(w, `{"status":"DB connection error"}`, http.StatusServiceUnavailable)
 			return
 		}
 		if err := sqlDB.Ping(); err != nil {
-			log.Println("❌ Database belum siap:", err)
+			log.Println("❌ DB not ready:", err)
 			http.Error(w, `{"status":"DB not ready"}`, http.StatusServiceUnavailable)
 			return
 		}
 
-		// Redis Check
+		// Check Redis connection
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if _, err := rdb.Ping(ctx).Result(); err != nil {
-			log.Println("❌ Redis belum siap:", err)
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			log.Println("❌ Redis not ready:", err)
 			http.Error(w, `{"status":"Redis not ready"}`, http.StatusServiceUnavailable)
 			return
 		}
 
+		// All good
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ready"}`))
+		json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 	}).Methods("GET")
 
 	// ========== Dependency Injection ==========
+
 	userRepo := user.NewUserRepositoryGorm(db)
 	userUC := usecase.NewUserUseCaseWithCache(userRepo, rdb)
 	userHandler := httpDelivery.NewUserHandler(userUC)

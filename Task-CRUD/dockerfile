@@ -1,47 +1,23 @@
 # ---------- Stage 1: Build ----------
-    FROM golang:1.23.6 AS builder
+    FROM golang:1.23-alpine AS builder
 
-    # Set working directory
     WORKDIR /app
     
-    # Copy go mod & sum terlebih dahulu untuk cache dependency layer
     COPY go.mod go.sum ./
+    RUN go mod tidy
     
-    # Download dependencies lebih awal
-    RUN go mod tidy && go mod download
-    
-    # Copy semua source code setelah deps di-cache
     COPY . .
     
-    # Build aplikasi (hasil binary bernama `main`)
-    RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o main ./cmd/main.go
+    RUN go build -o main ./main.go
     
     # ---------- Stage 2: Runtime ----------
-    FROM debian:bullseye-slim
+    FROM alpine:latest
     
-    # Install CA certificates & time zone data
-    RUN apt-get update && \
-        apt-get install -y ca-certificates tzdata && \
-        rm -rf /var/lib/apt/lists/*
-    
-    # Set timezone ke Asia/Jakarta (opsional tapi disarankan)
-    ENV TZ=Asia/Jakarta
-    
-    # Buat working directory
     WORKDIR /app
     
-    # Copy binary dari builder stage
-    COPY --from=builder /app/main ./main
+    COPY --from=builder /app/main .
     
-    # Copy file konfigurasi lingkungan (.env)
-    COPY --from=builder /app/.env .env
-    
-    # Pastikan binary bisa dieksekusi
-    RUN chmod +x ./main
-    
-    # Ekspos port aplikasi
     EXPOSE 8080
     
-    # Jalankan aplikasi
     CMD ["./main"]
     
