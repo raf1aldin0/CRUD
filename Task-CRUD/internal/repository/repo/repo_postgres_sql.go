@@ -1,38 +1,37 @@
 package repo
 
 import (
-	"Task-CRUD/internal/entity"
 	"context"
 	"database/sql"
+
+	"Task-CRUD/internal/entity"
+	interfaces "Task-CRUD/internal/interfaces"
+
+	"github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go/ext"
 )
 
-// RepoRepositoryInterface mendefinisikan kontrak fungsi untuk Repository
-type RepoRepositoryInterface interface {
-	GetAllRepositories() ([]entity.Repository, error)
-	GetRepositoryByID(id uint) (*entity.Repository, error)
-	CreateRepository(repo *entity.Repository) error
-	UpdateRepository(id uint, updatedRepo *entity.Repository) error
-	DeleteRepository(id uint) error
-}
-
-// Implementasi PostgreSQL
 type RepoRepositoryPostgres struct {
 	db *sql.DB
 }
 
-func NewRepoRepositoryPostgres(db *sql.DB) RepoRepositoryInterface {
+func NewRepoRepositoryPostgres(db *sql.DB) interfaces.RepoRepositoryInterfaceSQL {
 	return &RepoRepositoryPostgres{db: db}
 }
 
-func (r *RepoRepositoryPostgres) GetAllRepositories() ([]entity.Repository, error) {
+func (r *RepoRepositoryPostgres) GetAllRepositories(ctx context.Context) ([]entity.Repository, error) {
+	span, ctx := opentracing.StartSpanFromContext(ctx, "RepoRepositorySQL.GetAllRepositories")
+	defer span.Finish()
+
 	query := `
 	SELECT r.id, r.name, r.user_id, r.url, r.ai_enabled, r.created_at, r.updated_at,
 	       u.id, u.name, u.email, u.created_at, u.updated_at
 	FROM repositories r
 	JOIN users u ON r.user_id = u.id
 	`
-	rows, err := r.db.QueryContext(context.Background(), query)
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
+		ext.LogError(span, err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -46,6 +45,7 @@ func (r *RepoRepositoryPostgres) GetAllRepositories() ([]entity.Repository, erro
 			&user.ID, &user.Name, &user.Email, &user.CreatedAt, &user.UpdatedAt,
 		)
 		if err != nil {
+			ext.LogError(span, err)
 			return nil, err
 		}
 		repo.User = user
@@ -55,7 +55,10 @@ func (r *RepoRepositoryPostgres) GetAllRepositories() ([]entity.Repository, erro
 	return repos, nil
 }
 
-func (r *RepoRepositoryPostgres) GetRepositoryByID(id uint) (*entity.Repository, error) {
+func (r *RepoRepositoryPostgres) GetRepositoryByID(ctx context.Context, id uint) (*entity.Repository, error) {
+	span, ctx := opentracing.StartSpanFromContext(ctx, "RepoRepositorySQL.GetRepositoryByID")
+	defer span.Finish()
+
 	query := `
 	SELECT r.id, r.name, r.user_id, r.url, r.ai_enabled, r.created_at, r.updated_at,
 	       u.id, u.name, u.email, u.created_at, u.updated_at
@@ -63,10 +66,11 @@ func (r *RepoRepositoryPostgres) GetRepositoryByID(id uint) (*entity.Repository,
 	JOIN users u ON r.user_id = u.id
 	WHERE r.id = $1
 	`
+
 	var repo entity.Repository
 	var user entity.User
 
-	err := r.db.QueryRowContext(context.Background(), query, id).Scan(
+	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&repo.ID, &repo.Name, &repo.UserID, &repo.URL, &repo.AIEnabled, &repo.CreatedAt, &repo.UpdatedAt,
 		&user.ID, &user.Name, &user.Email, &user.CreatedAt, &user.UpdatedAt,
 	)
@@ -74,6 +78,7 @@ func (r *RepoRepositoryPostgres) GetRepositoryByID(id uint) (*entity.Repository,
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
+		ext.LogError(span, err)
 		return nil, err
 	}
 
@@ -81,30 +86,49 @@ func (r *RepoRepositoryPostgres) GetRepositoryByID(id uint) (*entity.Repository,
 	return &repo, nil
 }
 
-func (r *RepoRepositoryPostgres) CreateRepository(repo *entity.Repository) error {
+func (r *RepoRepositoryPostgres) CreateRepository(ctx context.Context, repo *entity.Repository) error {
+	span, ctx := opentracing.StartSpanFromContext(ctx, "RepoRepositorySQL.CreateRepository")
+	defer span.Finish()
+
 	query := `
 	INSERT INTO repositories (name, user_id, url, ai_enabled, created_at, updated_at)
 	VALUES ($1, $2, $3, $4, NOW(), NOW())
 	RETURNING id
 	`
-	return r.db.QueryRowContext(context.Background(), query,
+	err := r.db.QueryRowContext(ctx, query,
 		repo.Name, repo.UserID, repo.URL, repo.AIEnabled,
 	).Scan(&repo.ID)
+	if err != nil {
+		ext.LogError(span, err)
+	}
+	return err
 }
 
-func (r *RepoRepositoryPostgres) UpdateRepository(id uint, updatedRepo *entity.Repository) error {
+func (r *RepoRepositoryPostgres) UpdateRepository(ctx context.Context, id uint, updatedRepo *entity.Repository) error {
+	span, ctx := opentracing.StartSpanFromContext(ctx, "RepoRepositorySQL.UpdateRepository")
+	defer span.Finish()
+
 	query := `
 	UPDATE repositories
 	SET name = $1, user_id = $2, url = $3, ai_enabled = $4, updated_at = NOW()
 	WHERE id = $5
 	`
-	_, err := r.db.ExecContext(context.Background(), query,
+	_, err := r.db.ExecContext(ctx, query,
 		updatedRepo.Name, updatedRepo.UserID, updatedRepo.URL, updatedRepo.AIEnabled, id,
 	)
+	if err != nil {
+		ext.LogError(span, err)
+	}
 	return err
 }
 
-func (r *RepoRepositoryPostgres) DeleteRepository(id uint) error {
-	_, err := r.db.ExecContext(context.Background(), `DELETE FROM repositories WHERE id = $1`, id)
+func (r *RepoRepositoryPostgres) DeleteRepository(ctx context.Context, id uint) error {
+	span, ctx := opentracing.StartSpanFromContext(ctx, "RepoRepositorySQL.DeleteRepository")
+	defer span.Finish()
+
+	_, err := r.db.ExecContext(ctx, `DELETE FROM repositories WHERE id = $1`, id)
+	if err != nil {
+		ext.LogError(span, err)
+	}
 	return err
 }

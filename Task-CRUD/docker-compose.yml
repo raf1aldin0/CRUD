@@ -13,12 +13,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      jaeger:   # ✅ tergantung Jaeger agar tracing langsung bisa kirim
+        condition: service_started
     env_file:
       - .env
     restart: always
     networks:
       - app-network
-    healthcheck:  # ⬅️ Tambahkan healthcheck untuk readiness app
+    healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health/readiness"]
       interval: 10s
       timeout: 5s
@@ -57,6 +59,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.49
+    container_name: jaeger
+    ports:
+      - "16686:16686"   # UI
+      - "6831:6831/udp" # UDP tracing dari app Go
+    networks:
+      - app-network
 
 volumes:
   pgdata:

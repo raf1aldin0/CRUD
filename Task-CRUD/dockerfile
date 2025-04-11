@@ -3,6 +3,9 @@
 
     WORKDIR /app
     
+    # Install git karena beberapa Go packages mungkin perlu ini
+    RUN apk add --no-cache git
+    
     COPY go.mod go.sum ./
     RUN go mod tidy
     
@@ -14,6 +17,9 @@
     FROM alpine:latest
     
     WORKDIR /app
+    
+    # Pastikan runtime Alpine bisa eksekusi Go binary dengan dep
+    RUN apk add --no-cache ca-certificates
     
     COPY --from=builder /app/main .
     

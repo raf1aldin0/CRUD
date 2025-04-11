@@ -13,7 +13,9 @@ type Repository struct {
 	URL       string    `gorm:"type:varchar(255);not null" json:"url"`                                        // Repository URL
 	AIEnabled bool      `gorm:"default:false" json:"ai_enabled"`                                              // AI feature flag
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`                                             // Creation timestamp
-	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`                                             // Last update timestamp
+	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`     
+	Description string `json:"description"` // ✅ Tambahkan ini
+	// Last update timestamp
 }
 
 // TableName explicitly sets the table name to "repositories"

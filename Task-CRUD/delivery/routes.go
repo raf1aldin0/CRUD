@@ -2,10 +2,11 @@ package delivery
 
 import (
 	httpDelivery "Task-CRUD/delivery/http"
-	"Task-CRUD/internal/repository/repo"
-	"Task-CRUD/internal/repository/user"
+	repoRepo "Task-CRUD/internal/repository/repo"
+	userRepo "Task-CRUD/internal/repository/user"
 	"Task-CRUD/internal/usecase"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -16,7 +17,8 @@ import (
 	"gorm.io/gorm"
 )
 
-func NewRouter(db *gorm.DB, rdb *redis.Client) *mux.Router {
+// NewRouter menerima *gorm.DB untuk repo, *sql.DB untuk user, dan Redis client
+func NewRouter(gormDB *gorm.DB, sqlDB *sql.DB, rdb *redis.Client) *mux.Router {
 	router := mux.NewRouter()
 
 	// ========== Health Check Handlers ==========
@@ -32,16 +34,10 @@ func NewRouter(db *gorm.DB, rdb *redis.Client) *mux.Router {
 	router.HandleFunc("/health/readiness", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
-		// Check DB connection
-		sqlDB, err := db.DB()
-		if err != nil {
-			log.Println("❌ DB connection error:", err)
-			http.Error(w, `{"status":"DB connection error"}`, http.StatusServiceUnavailable)
-			return
-		}
+		// Check SQL DB connection
 		if err := sqlDB.Ping(); err != nil {
-			log.Println("❌ DB not ready:", err)
-			http.Error(w, `{"status":"DB not ready"}`, http.StatusServiceUnavailable)
+			log.Println("❌ SQL DB not ready:", err)
+			http.Error(w, `{"status":"SQL DB not ready"}`, http.StatusServiceUnavailable)
 			return
 		}
 
@@ -61,13 +57,15 @@ func NewRouter(db *gorm.DB, rdb *redis.Client) *mux.Router {
 
 	// ========== Dependency Injection ==========
 
-	userRepo := user.NewUserRepositoryGorm(db)
-	userUC := usecase.NewUserUseCaseWithCache(userRepo, rdb)
-	userHandler := httpDelivery.NewUserHandler(userUC)
+	// Untuk User: gunakan SQL native
+	userRepository := userRepo.NewUserRepositoryPostgres(sqlDB)
+	userUseCase := usecase.NewUserUseCaseWithCache(userRepository, rdb)
+	userHandler := httpDelivery.NewUserHandler(userUseCase)
 
-	repoRepo := repo.NewRepoRepositoryGorm(db)
-	repoUC := usecase.NewRepoUseCaseWithCache(repoRepo, rdb)
-	repoHandler := httpDelivery.NewRepoHandler(repoUC)
+	// Untuk Repository: gunakan GORM
+	repoRepository := repoRepo.NewRepoRepositoryGorm(gormDB)
+	repoUseCase := usecase.NewRepoUseCaseWithCache(repoRepository, rdb)
+	repoHandler := httpDelivery.NewRepoHandler(repoUseCase)
 
 	// ========== User Routes ==========
 	userRouter := router.PathPrefix("/users").Subrouter()

@@ -3,7 +3,10 @@ package main
 import (
 	"Task-CRUD/config"
 	"Task-CRUD/delivery"
+	"Task-CRUD/internal/cbreaker"
 	"Task-CRUD/internal/entity"
+	"Task-CRUD/tracing"
+
 	"context"
 	"log"
 	"net/http"
@@ -11,6 +14,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/opentracing/opentracing-go"
 )
 
 func main() {
@@ -25,15 +30,31 @@ func main() {
 		log.Fatal("❌ Konfigurasi tidak lengkap atau nilai timeout tidak di-set. Mohon cek file .env kamu")
 	}
 
-	// Inisialisasi PostgreSQL
-	db, err := config.InitPostgres(cfg)
+	// Inisialisasi Jaeger Tracing
+	tracer, closer, err := tracing.InitJaeger("task-crud-service")
 	if err != nil {
-		log.Fatalf("❌ Gagal inisialisasi PostgreSQL: %v", err)
+		log.Fatalf("❌ Gagal inisialisasi Jaeger: %v", err)
 	}
-	log.Println("✅ Koneksi ke PostgreSQL berhasil")
+	defer closer.Close()
+	opentracing.SetGlobalTracer(tracer)
+	log.Println("🛰️ Jaeger tracing aktif")
+
+	// Inisialisasi GORM (PostgreSQL)
+	gormDB, err := config.InitPostgres(cfg)
+	if err != nil {
+		log.Fatalf("❌ Gagal inisialisasi PostgreSQL (GORM): %v", err)
+	}
+	log.Println("✅ Koneksi ke PostgreSQL (GORM) berhasil")
+
+	// Ambil *sql.DB dari GORM
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		log.Fatalf("❌ Gagal mengambil koneksi *sql.DB dari GORM: %v", err)
+	}
+	log.Println("✅ Koneksi SQL Native berhasil")
 
 	// AutoMigrate untuk entity
-	if err := db.AutoMigrate(&entity.User{}, &entity.Repository{}); err != nil {
+	if err := gormDB.AutoMigrate(&entity.User{}, &entity.Repository{}); err != nil {
 		log.Fatalf("❌ Gagal AutoMigrate: %v", err)
 	}
 	log.Println("✅ AutoMigrate berhasil")
@@ -44,8 +65,12 @@ func main() {
 	}
 	log.Println("✅ Redis berhasil terhubung")
 
-	// Setup router
-	router := delivery.NewRouter(db, config.RedisClient)
+	// ✅ Inisialisasi Circuit Breaker secara global
+	cbreaker.Breaker = cbreaker.NewDefaultBreaker("UserBreaker")
+	log.Println("🔌 Circuit Breaker siap digunakan")
+
+	// Setup router dengan GORM + SQL + Redis
+	router := delivery.NewRouter(gormDB, sqlDB, config.RedisClient)
 
 	// Setup HTTP server
 	server := &http.Server{

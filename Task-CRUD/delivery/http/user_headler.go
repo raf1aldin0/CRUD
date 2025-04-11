@@ -2,21 +2,23 @@ package http
 
 import (
 	"Task-CRUD/internal/entity"
-	"Task-CRUD/internal/usecase"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 
+	interfaces "Task-CRUD/internal/interfaces"
+
 	"github.com/gorilla/mux"
+	"github.com/opentracing/opentracing-go"
 )
 
 type UserHandler struct {
-	userUC usecase.UserUseCaseInterface
+	userUC interfaces.UserUseCaseInterface
 }
 
-func NewUserHandler(userUC usecase.UserUseCaseInterface) *UserHandler {
+func NewUserHandler(userUC interfaces.UserUseCaseInterface) *UserHandler {
 	return &UserHandler{userUC: userUC}
 }
 
@@ -28,11 +30,24 @@ func writeUserError(w http.ResponseWriter, statusCode int, message string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
+func parseIDFromVars(r *http.Request) (uint, error) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid ID")
+	}
+	return uint(id), nil
+}
+
 // --- Handlers ---
 
 // GET /users
 func (h *UserHandler) GetUsers(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	span := opentracing.StartSpan("Handler.GetUsers")
+	defer span.Finish()
+	ctx := opentracing.ContextWithSpan(r.Context(), span)
+
 	users, err := h.userUC.GetUsers(ctx)
 	if err != nil {
 		log.Printf("ERROR | GetUsers: %v", err)
@@ -46,13 +61,16 @@ func (h *UserHandler) GetUsers(w http.ResponseWriter, r *http.Request) {
 
 // GET /users/{id}
 func (h *UserHandler) GetUserByID(w http.ResponseWriter, r *http.Request) {
+	span := opentracing.StartSpan("Handler.GetUserByID")
+	defer span.Finish()
+	ctx := opentracing.ContextWithSpan(r.Context(), span)
+
 	id, err := parseIDFromVars(r)
 	if err != nil {
 		writeUserError(w, http.StatusBadRequest, "ID tidak valid")
 		return
 	}
 
-	ctx := r.Context()
 	user, err := h.userUC.GetUserByID(ctx, id)
 	if err != nil {
 		log.Printf("ERROR | GetUserByID: %v", err)
@@ -66,24 +84,21 @@ func (h *UserHandler) GetUserByID(w http.ResponseWriter, r *http.Request) {
 
 // POST /users
 func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
-	var user entity.User
+	span := opentracing.StartSpan("Handler.CreateUser")
+	defer span.Finish()
+	ctx := opentracing.ContextWithSpan(r.Context(), span)
 
+	var user entity.User
 	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
 		writeUserError(w, http.StatusBadRequest, "Format JSON tidak valid")
 		return
 	}
 
-	if user.Name == "" || user.Email == "" {
-		writeUserError(w, http.StatusBadRequest, "Nama dan Email harus diisi")
-		return
-	}
-
 	log.Printf("DEBUG | CreateUser payload: %+v", user)
 
-	ctx := r.Context()
 	if err := h.userUC.CreateUser(ctx, &user); err != nil {
 		log.Printf("ERROR | CreateUser: %v", err)
-		writeUserError(w, http.StatusInternalServerError, "Gagal membuat user")
+		writeUserError(w, http.StatusBadRequest, err.Error()) // ❗Tampilkan pesan validasi ke user
 		return
 	}
 
@@ -93,6 +108,10 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 
 // PUT /users/{id}
 func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	span := opentracing.StartSpan("Handler.UpdateUser")
+	defer span.Finish()
+	ctx := opentracing.ContextWithSpan(r.Context(), span)
+
 	id, err := parseIDFromVars(r)
 	if err != nil {
 		writeUserError(w, http.StatusBadRequest, "ID tidak valid")
@@ -105,15 +124,9 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user.Name == "" {
-		writeUserError(w, http.StatusBadRequest, "Nama tidak boleh kosong")
-		return
-	}
-
-	ctx := r.Context()
 	if err := h.userUC.UpdateUser(ctx, id, &user); err != nil {
 		log.Printf("ERROR | UpdateUser: %v", err)
-		writeUserError(w, http.StatusInternalServerError, "Gagal memperbarui user")
+		writeUserError(w, http.StatusBadRequest, err.Error()) // ❗Tampilkan pesan validasi ke user
 		return
 	}
 
@@ -123,13 +136,16 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /users/{id}
 func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
+	span := opentracing.StartSpan("Handler.DeleteUser")
+	defer span.Finish()
+	ctx := opentracing.ContextWithSpan(r.Context(), span)
+
 	id, err := parseIDFromVars(r)
 	if err != nil {
 		writeUserError(w, http.StatusBadRequest, "ID tidak valid")
 		return
 	}
 
-	ctx := r.Context()
 	if err := h.userUC.DeleteUser(ctx, id); err != nil {
 		log.Printf("ERROR | DeleteUser: %v", err)
 		writeUserError(w, http.StatusInternalServerError, "Gagal menghapus user")
@@ -138,16 +154,4 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 	fmt.Fprint(w, `{"message": "User berhasil dihapus"}`)
-}
-
-// --- Utility ---
-
-func parseIDFromVars(r *http.Request) (uint, error) {
-	vars := mux.Vars(r)
-	idStr := vars["id"]
-	id, err := strconv.Atoi(idStr)
-	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("invalid ID")
-	}
-	return uint(id), nil
 }

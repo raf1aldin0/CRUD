@@ -5,43 +5,44 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
+	"Task-CRUD/internal/cbreaker"
 	"Task-CRUD/internal/entity"
-	"Task-CRUD/internal/repository/repo" // ⬅️ import langsung ke package `repo`
+	interfaces "Task-CRUD/internal/interfaces"
 
+	"github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go/log"
 	"github.com/redis/go-redis/v9"
+	"github.com/sony/gobreaker"
 )
 
-type RepoUseCaseInterface interface {
-	GetAllRepos(ctx context.Context) ([]entity.Repository, error)
-	GetRepositoryByID(ctx context.Context, id uint) (*entity.Repository, error)
-	CreateRepo(ctx context.Context, repo *entity.Repository) error
-	UpdateRepo(ctx context.Context, id uint, repo *entity.Repository) error
-	DeleteRepo(ctx context.Context, id uint) error
-}
-
 type RepoUseCase struct {
-	repoRepo repo.RepoRepositoryInterfaceGorm // ⬅️ gunakan interface dari package repo langsung
+	repoRepo interfaces.RepoRepositoryInterfaceGorm
 	redis    *redis.Client
+	breaker  *gobreaker.CircuitBreaker
 }
 
-// Constructor tanpa Redis
-func NewRepoUseCase(repoRepo repo.RepoRepositoryInterfaceGorm) RepoUseCaseInterface {
+func NewRepoUseCase(repoRepo interfaces.RepoRepositoryInterfaceGorm) interfaces.RepoUseCaseInterface {
 	return &RepoUseCase{
 		repoRepo: repoRepo,
+		breaker:  cbreaker.Breaker,
 	}
 }
 
-// Constructor dengan Redis
-func NewRepoUseCaseWithCache(repoRepo repo.RepoRepositoryInterfaceGorm, redisClient *redis.Client) RepoUseCaseInterface {
+func NewRepoUseCaseWithCache(repoRepo interfaces.RepoRepositoryInterfaceGorm, redisClient *redis.Client) interfaces.RepoUseCaseInterface {
 	return &RepoUseCase{
 		repoRepo: repoRepo,
 		redis:    redisClient,
+		breaker:  cbreaker.Breaker,
 	}
 }
 
 func (uc *RepoUseCase) GetAllRepos(ctx context.Context) ([]entity.Repository, error) {
+	span, ctx := opentracing.StartSpanFromContext(ctx, "RepoUseCase.GetAllRepos")
+	defer span.Finish()
+
 	cacheKey := "repositories:all"
 
 	if uc.redis != nil {
@@ -49,31 +50,37 @@ func (uc *RepoUseCase) GetAllRepos(ctx context.Context) ([]entity.Repository, er
 		if err == nil {
 			var cachedRepos []entity.Repository
 			if err := json.Unmarshal([]byte(cached), &cachedRepos); err == nil {
+				span.LogFields(log.String("cache", "hit"))
 				fmt.Println("✅ Data repositories diambil dari Redis")
 				return cachedRepos, nil
 			}
-			fmt.Printf("⚠️ Gagal unmarshal data Redis: %v\n", err)
+			span.LogFields(log.Error(err))
 		} else if err != redis.Nil {
-			fmt.Printf("⚠️ Gagal ambil cache dari Redis: %v\n", err)
+			span.LogFields(log.Error(err))
 		}
 	}
 
-	repos, err := uc.repoRepo.GetAllRepositories()
+	result, err := uc.breaker.Execute(func() (interface{}, error) {
+		return uc.repoRepo.GetAllRepositories(ctx)
+	})
 	if err != nil {
+		span.LogFields(log.Error(err))
 		return nil, err
 	}
+	repos := result.([]entity.Repository)
 
 	if uc.redis != nil {
 		bytes, _ := json.Marshal(repos)
-		if err := uc.redis.Set(ctx, cacheKey, bytes, 10*time.Minute).Err(); err != nil {
-			fmt.Printf("⚠️ Gagal menyimpan cache ke Redis: %v\n", err)
-		}
+		_ = uc.redis.Set(ctx, cacheKey, bytes, 10*time.Minute).Err()
 	}
 
 	return repos, nil
 }
 
 func (uc *RepoUseCase) GetRepositoryByID(ctx context.Context, id uint) (*entity.Repository, error) {
+	span, ctx := opentracing.StartSpanFromContext(ctx, "RepoUseCase.GetRepositoryByID")
+	defer span.Finish()
+
 	cacheKey := fmt.Sprintf("repository:%d", id)
 
 	if uc.redis != nil {
@@ -81,78 +88,110 @@ func (uc *RepoUseCase) GetRepositoryByID(ctx context.Context, id uint) (*entity.
 		if err == nil {
 			var cachedRepo entity.Repository
 			if err := json.Unmarshal([]byte(cached), &cachedRepo); err == nil {
+				span.LogFields(log.String("cache", "hit"))
 				fmt.Println("✅ Repository ditemukan di Redis")
 				return &cachedRepo, nil
 			}
-			fmt.Printf("⚠️ Gagal unmarshal repository dari Redis: %v\n", err)
-		} else if err != redis.Nil {
-			fmt.Printf("⚠️ Redis error saat get: %v\n", err)
+			span.LogFields(log.Error(err))
 		}
 	}
 
-	// Ambil dari DB kalau tidak ada di Redis
-	repo, err := uc.repoRepo.GetRepositoryByID(id)
+	result, err := uc.breaker.Execute(func() (interface{}, error) {
+		return uc.repoRepo.GetRepositoryByID(ctx, id)
+	})
 	if err != nil {
+		span.LogFields(log.Error(err))
 		return nil, err
 	}
+	repo := result.(*entity.Repository)
 
-	// Simpan ke Redis
 	if uc.redis != nil {
 		bytes, _ := json.Marshal(repo)
-		if err := uc.redis.Set(ctx, cacheKey, bytes, 10*time.Minute).Err(); err != nil {
-			fmt.Printf("⚠️ Gagal simpan repository ke Redis: %v\n", err)
-		}
+		_ = uc.redis.Set(ctx, cacheKey, bytes, 10*time.Minute).Err()
 	}
 
 	return repo, nil
 }
 
 func (uc *RepoUseCase) CreateRepo(ctx context.Context, repo *entity.Repository) error {
-	if repo.Name == "" {
-		return errors.New("nama repository tidak boleh kosong")
+	span, ctx := opentracing.StartSpanFromContext(ctx, "RepoUseCase.CreateRepo")
+	defer span.Finish()
+
+	if err := validateRepository(repo); err != nil {
+		span.LogFields(log.Error(err))
+		return err
 	}
 
-	if err := uc.repoRepo.CreateRepository(repo); err != nil {
+	_, err := uc.breaker.Execute(func() (interface{}, error) {
+		return nil, uc.repoRepo.CreateRepository(ctx, repo)
+	})
+	if err != nil {
+		span.LogFields(log.Error(err))
 		return err
 	}
 
 	if uc.redis != nil {
-		if err := uc.redis.Del(ctx, "repositories:all").Err(); err != nil {
-			fmt.Printf("⚠️ Gagal hapus cache Redis setelah Create: %v\n", err)
-		}
+		_ = uc.redis.Del(ctx, "repositories:all").Err()
 	}
 
 	return nil
 }
 
 func (uc *RepoUseCase) UpdateRepo(ctx context.Context, id uint, repo *entity.Repository) error {
-	if repo.Name == "" {
-		return errors.New("nama repository tidak boleh kosong")
+	span, ctx := opentracing.StartSpanFromContext(ctx, "RepoUseCase.UpdateRepo")
+	defer span.Finish()
+
+	if err := validateRepository(repo); err != nil {
+		span.LogFields(log.Error(err))
+		return err
 	}
 
-	if err := uc.repoRepo.UpdateRepository(id, repo); err != nil {
+	_, err := uc.breaker.Execute(func() (interface{}, error) {
+		return nil, uc.repoRepo.UpdateRepository(ctx, id, repo)
+	})
+	if err != nil {
+		span.LogFields(log.Error(err))
 		return err
 	}
 
 	if uc.redis != nil {
-		if err := uc.redis.Del(ctx, "repositories:all").Err(); err != nil {
-			fmt.Printf("⚠️ Gagal hapus cache Redis setelah Update: %v\n", err)
-		}
+		_ = uc.redis.Del(ctx, "repositories:all").Err()
 	}
 
 	return nil
 }
 
 func (uc *RepoUseCase) DeleteRepo(ctx context.Context, id uint) error {
-	if err := uc.repoRepo.DeleteRepository(id); err != nil {
+	span, ctx := opentracing.StartSpanFromContext(ctx, "RepoUseCase.DeleteRepo")
+	defer span.Finish()
+
+	_, err := uc.breaker.Execute(func() (interface{}, error) {
+		return nil, uc.repoRepo.DeleteRepository(ctx, id)
+	})
+	if err != nil {
+		span.LogFields(log.Error(err))
 		return err
 	}
 
 	if uc.redis != nil {
-		if err := uc.redis.Del(ctx, "repositories:all").Err(); err != nil {
-			fmt.Printf("⚠️ Gagal hapus cache Redis setelah Delete: %v\n", err)
-		}
+		_ = uc.redis.Del(ctx, "repositories:all").Err()
 	}
 
+	return nil
+}
+
+func validateRepository(repo *entity.Repository) error {
+	if repo.Name == "" {
+		return errors.New("nama repository tidak boleh kosong")
+	}
+	if repo.URL == "" {
+		return errors.New("URL repository tidak boleh kosong")
+	}
+	if _, err := url.ParseRequestURI(repo.URL); err != nil {
+		return errors.New("URL repository tidak valid")
+	}
+	if repo.UserID == 0 {
+		return errors.New("user ID tidak boleh kosong")
+	}
 	return nil
 }
