@@ -1,0 +1,38 @@
+# ---------- Stage 1: Build ----------
+    FROM golang:1.23-alpine AS builder
+
+    WORKDIR /app
+    
+    # Install git dan tools tambahan (penting untuk modul, jaeger, kafka)
+    RUN apk add --no-cache git bash
+    
+    # Copy dan download dependency
+    COPY go.mod go.sum ./
+    RUN go mod tidy
+    
+    # Copy seluruh source code
+    COPY . .
+    
+    # Build aplikasi dengan static binary (Jaeger, Kafka, TLS-friendly)
+    RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./main.go
+    
+    # ---------- Stage 2: Runtime ----------
+    FROM alpine:latest
+    
+    WORKDIR /app
+    
+    # Tambahkan CA cert, curl (debugging, healthcheck), dan bash (jika dipakai)
+    RUN apk add --no-cache ca-certificates curl bash
+    
+    # Salin hasil build dari stage builder
+    COPY --from=builder /app/main .
+    
+    # Optional: Salin file konfigurasi (jika .env dibaca dari container secara langsung)
+    # COPY .env .env
+    
+    # Port yang digunakan aplikasi
+    EXPOSE 8080
+    
+    # Jalankan binary
+    CMD ["./main"]
+    
