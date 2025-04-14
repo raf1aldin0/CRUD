@@ -32,7 +32,7 @@
     
     # Port yang digunakan aplikasi
     EXPOSE 8080
-    
+
     # Jalankan binary
     CMD ["./main"]
     
